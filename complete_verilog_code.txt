@@ -1,0 +1,751 @@
+// ===== src/adder.v =====
+module adder #(
+    parameter WIDTH = 32
+)(
+    input  wire [WIDTH-1:0] a,
+    input  wire [WIDTH-1:0] b,
+    output wire [WIDTH-1:0] y
+);
+    assign y = a + b;
+endmodule
+
+
+// ===== src/alu.v =====
+module alu(
+    input  wire [31:0] a,
+    input  wire [31:0] b,
+    input  wire [3:0]  alu_control,
+    output reg  [31:0] alu_result,
+    output wire        zero
+);
+    localparam ALU_ADD  = 4'b0000;
+    localparam ALU_SUB  = 4'b0001;
+    localparam ALU_AND  = 4'b0010;
+    localparam ALU_OR   = 4'b0011;
+    localparam ALU_XOR  = 4'b0100;
+    localparam ALU_SLL  = 4'b0101;
+    localparam ALU_SRL  = 4'b0110;
+    localparam ALU_SRA  = 4'b0111;
+    localparam ALU_SLT  = 4'b1000;
+    localparam ALU_SLTU = 4'b1001;
+
+    always @(*) begin
+        case (alu_control)
+            ALU_ADD:  alu_result = a + b;
+            ALU_SUB:  alu_result = a - b;
+            ALU_AND:  alu_result = a & b;
+            ALU_OR:   alu_result = a | b;
+            ALU_XOR:  alu_result = a ^ b;
+            ALU_SLL:  alu_result = a << b[4:0];
+            ALU_SRL:  alu_result = a >> b[4:0];
+            ALU_SRA:  alu_result = $signed(a) >>> b[4:0];
+            ALU_SLT:  alu_result = ($signed(a) < $signed(b)) ? 32'd1 : 32'd0;
+            ALU_SLTU: alu_result = (a < b) ? 32'd1 : 32'd0;
+            default:  alu_result = 32'b0;
+        endcase
+    end
+
+    assign zero = (alu_result == 32'b0);
+endmodule
+
+
+// ===== src/alu_decoder.v =====
+module alu_decoder(
+    input  wire [1:0] alu_op,
+    input  wire [2:0] funct3,
+    input  wire       funct7b5,
+    output reg  [3:0] alu_control
+);
+    localparam ALU_OP_ADD    = 2'b00;
+    localparam ALU_OP_BRANCH = 2'b01;
+    localparam ALU_OP_RTYPE  = 2'b10;
+    localparam ALU_OP_ITYPE  = 2'b11;
+
+    localparam ALU_ADD  = 4'b0000;
+    localparam ALU_SUB  = 4'b0001;
+    localparam ALU_AND  = 4'b0010;
+    localparam ALU_OR   = 4'b0011;
+    localparam ALU_XOR  = 4'b0100;
+    localparam ALU_SLL  = 4'b0101;
+    localparam ALU_SRL  = 4'b0110;
+    localparam ALU_SRA  = 4'b0111;
+    localparam ALU_SLT  = 4'b1000;
+    localparam ALU_SLTU = 4'b1001;
+
+    always @(*) begin
+        case (alu_op)
+            ALU_OP_ADD:    alu_control = ALU_ADD;
+            ALU_OP_BRANCH: alu_control = ALU_SUB;
+            ALU_OP_RTYPE: begin
+                case (funct3)
+                    3'b000: alu_control = funct7b5 ? ALU_SUB : ALU_ADD;
+                    3'b001: alu_control = ALU_SLL;
+                    3'b010: alu_control = ALU_SLT;
+                    3'b011: alu_control = ALU_SLTU;
+                    3'b100: alu_control = ALU_XOR;
+                    3'b101: alu_control = funct7b5 ? ALU_SRA : ALU_SRL;
+                    3'b110: alu_control = ALU_OR;
+                    3'b111: alu_control = ALU_AND;
+                    default: alu_control = ALU_ADD;
+                endcase
+            end
+            ALU_OP_ITYPE: begin
+                case (funct3)
+                    3'b000: alu_control = ALU_ADD;
+                    3'b001: alu_control = ALU_SLL;
+                    3'b010: alu_control = ALU_SLT;
+                    3'b011: alu_control = ALU_SLTU;
+                    3'b100: alu_control = ALU_XOR;
+                    3'b101: alu_control = funct7b5 ? ALU_SRA : ALU_SRL;
+                    3'b110: alu_control = ALU_OR;
+                    3'b111: alu_control = ALU_AND;
+                    default: alu_control = ALU_ADD;
+                endcase
+            end
+            default: alu_control = ALU_ADD;
+        endcase
+    end
+endmodule
+
+
+// ===== src/controller.v =====
+module controller(
+    input  wire       clk,
+    input  wire       reset,
+    input  wire [6:0] op,
+    input  wire [2:0] funct3,
+    input  wire       funct7b5,
+    input  wire       zero,
+    output wire       we_pc,
+    output wire       we_ir,
+    output wire       we_mem,
+    output wire       we_rf,
+    output wire       branch,
+    output wire       pc_update,
+    output wire       sel_mem_addr,
+    output wire [1:0] sel_result,
+    output wire [1:0] sel_alu_src_a,
+    output wire [1:0] sel_alu_src_b,
+    output wire [2:0] sel_ext,
+    output wire [3:0] alu_control,
+    output wire [3:0] state
+);
+    wire [1:0] alu_op;
+
+    main_decoder MAIN_DECODER(
+        .clk(clk),
+        .reset(reset),
+        .op(op),
+        .zero(zero),
+        .we_pc(we_pc),
+        .we_ir(we_ir),
+        .we_mem(we_mem),
+        .we_rf(we_rf),
+        .branch(branch),
+        .pc_update(pc_update),
+        .sel_mem_addr(sel_mem_addr),
+        .sel_result(sel_result),
+        .sel_alu_src_a(sel_alu_src_a),
+        .sel_alu_src_b(sel_alu_src_b),
+        .sel_ext(sel_ext),
+        .alu_op(alu_op),
+        .state(state)
+    );
+
+    alu_decoder ALU_DECODER(
+        .alu_op(alu_op),
+        .funct3(funct3),
+        .funct7b5(funct7b5),
+        .alu_control(alu_control)
+    );
+endmodule
+
+
+// ===== src/main_decoder.v =====
+module main_decoder(
+    input  wire       clk,
+    input  wire       reset,
+    input  wire [6:0] op,
+    input  wire       zero,
+    output reg        we_pc,
+    output reg        we_ir,
+    output reg        we_mem,
+    output reg        we_rf,
+    output reg        branch,
+    output reg        pc_update,
+    output reg        sel_mem_addr,
+    output reg  [1:0] sel_result,
+    output reg  [1:0] sel_alu_src_a,
+    output reg  [1:0] sel_alu_src_b,
+    output reg  [2:0] sel_ext,
+    output reg  [1:0] alu_op,
+    output reg  [3:0] state
+);
+    localparam OP_LW     = 7'b0000011;
+    localparam OP_SW     = 7'b0100011;
+    localparam OP_RTYPE  = 7'b0110011;
+    localparam OP_ITYPE  = 7'b0010011;
+    localparam OP_BEQ    = 7'b1100011;
+    localparam OP_JAL    = 7'b1101111;
+    localparam OP_LUI    = 7'b0110111;
+
+    localparam IMM_I = 3'b000;
+    localparam IMM_S = 3'b001;
+    localparam IMM_B = 3'b010;
+    localparam IMM_J = 3'b011;
+    localparam IMM_U = 3'b100;
+
+    localparam ALU_OP_ADD    = 2'b00;
+    localparam ALU_OP_BRANCH = 2'b01;
+    localparam ALU_OP_RTYPE  = 2'b10;
+    localparam ALU_OP_ITYPE  = 2'b11;
+
+    localparam S_FETCH    = 4'd0;
+    localparam S_DECODE   = 4'd1;
+    localparam S_EXE_ADDR = 4'd2;
+    localparam S_MEM_RD   = 4'd3;
+    localparam S_WB_MEM   = 4'd4;
+    localparam S_MEM_WR   = 4'd5;
+    localparam S_EXE_R    = 4'd6;
+    localparam S_WB_ALU   = 4'd7;
+    localparam S_BEQ      = 4'd8;
+    localparam S_EXE_I    = 4'd9;
+    localparam S_JAL      = 4'd10;
+    localparam S_LUI      = 4'd11;
+
+    reg [3:0] next_state;
+
+    always @(posedge clk) begin
+        if (reset)
+            state <= S_FETCH;
+        else
+            state <= next_state;
+    end
+
+    always @(*) begin
+        case (state)
+            S_FETCH:  next_state = S_DECODE;
+            S_DECODE: begin
+                case (op)
+                    OP_LW:    next_state = S_EXE_ADDR;
+                    OP_SW:    next_state = S_EXE_ADDR;
+                    OP_RTYPE: next_state = S_EXE_R;
+                    OP_ITYPE: next_state = S_EXE_I;
+                    OP_BEQ:   next_state = S_BEQ;
+                    OP_JAL:   next_state = S_JAL;
+                    OP_LUI:   next_state = S_LUI;
+                    default:  next_state = S_FETCH;
+                endcase
+            end
+            S_EXE_ADDR: next_state = (op == OP_LW) ? S_MEM_RD : S_MEM_WR;
+            S_MEM_RD:   next_state = S_WB_MEM;
+            S_WB_MEM:   next_state = S_FETCH;
+            S_MEM_WR:   next_state = S_FETCH;
+            S_EXE_R:    next_state = S_WB_ALU;
+            S_WB_ALU:   next_state = S_FETCH;
+            S_BEQ:      next_state = S_FETCH;
+            S_EXE_I:    next_state = S_WB_ALU;
+            S_JAL:      next_state = S_FETCH;
+            S_LUI:      next_state = S_FETCH;
+            default:    next_state = S_FETCH;
+        endcase
+    end
+
+    always @(*) begin
+        case (op)
+            OP_LW:    sel_ext = IMM_I;
+            OP_SW:    sel_ext = IMM_S;
+            OP_BEQ:   sel_ext = IMM_B;
+            OP_JAL:   sel_ext = IMM_J;
+            OP_LUI:   sel_ext = IMM_U;
+            OP_ITYPE: sel_ext = IMM_I;
+            default:  sel_ext = IMM_I;
+        endcase
+    end
+
+    always @(*) begin
+        we_pc         = 1'b0;
+        we_ir         = 1'b0;
+        we_mem        = 1'b0;
+        we_rf         = 1'b0;
+        branch        = 1'b0;
+        pc_update     = 1'b0;
+        sel_mem_addr  = 1'b0;
+        sel_result    = 2'b00;
+        sel_alu_src_a = 2'b00;
+        sel_alu_src_b = 2'b00;
+        alu_op        = ALU_OP_ADD;
+
+        case (state)
+            S_FETCH: begin
+                sel_mem_addr  = 1'b0;
+                we_ir         = 1'b1;
+                sel_alu_src_a = 2'b00;  // PC
+                sel_alu_src_b = 2'b10;  // 4
+                alu_op        = ALU_OP_ADD;
+                sel_result    = 2'b10;  // current ALU result, PC + 4
+                pc_update     = 1'b1;
+                we_pc         = 1'b1;
+            end
+            S_DECODE: begin
+                sel_alu_src_a = 2'b01;  // saved instruction PC
+                sel_alu_src_b = 2'b01;  // immediate
+                alu_op        = ALU_OP_ADD; // precompute branch/jump target into alu_reg
+            end
+            S_EXE_ADDR: begin
+                sel_alu_src_a = 2'b10;  // rd1_reg
+                sel_alu_src_b = 2'b01;  // immediate
+                alu_op        = ALU_OP_ADD;
+            end
+            S_MEM_RD: begin
+                sel_result    = 2'b00;  // alu_reg as memory address
+                sel_mem_addr  = 1'b1;
+            end
+            S_WB_MEM: begin
+                sel_result    = 2'b01;  // data_reg
+                we_rf         = 1'b1;
+            end
+            S_MEM_WR: begin
+                sel_result    = 2'b00;  // alu_reg as memory address
+                sel_mem_addr  = 1'b1;
+                we_mem        = 1'b1;
+            end
+            S_EXE_R: begin
+                sel_alu_src_a = 2'b10;  // rd1_reg
+                sel_alu_src_b = 2'b00;  // rd2_reg
+                alu_op        = ALU_OP_RTYPE;
+            end
+            S_WB_ALU: begin
+                sel_result    = 2'b00;  // alu_reg
+                we_rf         = 1'b1;
+            end
+            S_BEQ: begin
+                sel_alu_src_a = 2'b10;  // rd1_reg
+                sel_alu_src_b = 2'b00;  // rd2_reg
+                alu_op        = ALU_OP_BRANCH;
+                sel_result    = 2'b00;  // precomputed branch target in alu_reg
+                branch        = 1'b1;
+                pc_update     = zero;
+                we_pc         = zero;
+            end
+            S_EXE_I: begin
+                sel_alu_src_a = 2'b10;  // rd1_reg
+                sel_alu_src_b = 2'b01;  // immediate
+                alu_op        = ALU_OP_ITYPE;
+            end
+            S_JAL: begin
+                sel_result    = 2'b10;  // PC + 4 is already in pc_q after fetch
+                pc_update     = 1'b1;
+                we_pc         = 1'b1;
+                we_rf         = 1'b1;
+            end
+            S_LUI: begin
+                sel_result    = 2'b11;  // immediate
+                we_rf         = 1'b1;
+            end
+            default: begin
+                // keep default safe zero values
+            end
+        endcase
+    end
+endmodule
+
+
+// ===== src/mc_reg.v =====
+module mc_reg #(
+    parameter WIDTH = 32
+)(
+    input  wire             clk,
+    input  wire             reset,
+    input  wire             en,
+    input  wire [WIDTH-1:0] d,
+    output reg  [WIDTH-1:0] q
+);
+    always @(posedge clk) begin
+        if (reset)
+            q <= {WIDTH{1'b0}};
+        else if (en)
+            q <= d;
+    end
+endmodule
+
+
+// ===== src/mux2.v =====
+module mux2 #(
+    parameter WIDTH = 32
+)(
+    input  wire [WIDTH-1:0] d0,
+    input  wire [WIDTH-1:0] d1,
+    input  wire             sel,
+    output wire [WIDTH-1:0] y
+);
+    assign y = sel ? d1 : d0;
+endmodule
+
+
+// ===== src/mux4.v =====
+module mux4 #(
+    parameter WIDTH = 32
+)(
+    input  wire [WIDTH-1:0] d0,
+    input  wire [WIDTH-1:0] d1,
+    input  wire [WIDTH-1:0] d2,
+    input  wire [WIDTH-1:0] d3,
+    input  wire [1:0]       sel,
+    output reg  [WIDTH-1:0] y
+);
+    always @(*) begin
+        case (sel)
+            2'b00: y = d0;
+            2'b01: y = d1;
+            2'b10: y = d2;
+            2'b11: y = d3;
+            default: y = d0;
+        endcase
+    end
+endmodule
+
+
+// ===== src/my_mem.v =====
+module my_mem #(
+    parameter WIDTH = 32,
+    parameter MEM_DEPTH = 256
+)(
+    input  wire             clk,
+    input  wire             we,
+    input  wire [WIDTH-1:0] a,
+    input  wire [WIDTH-1:0] wd,
+    output wire [WIDTH-1:0] rd
+);
+    reg [WIDTH-1:0] RAM [0:MEM_DEPTH-1];
+
+    assign rd = RAM[a[31:2]];
+
+    always @(posedge clk) begin
+        if (we)
+            RAM[a[31:2]] <= wd;
+    end
+endmodule
+
+
+// ===== src/my_reg.v =====
+module my_reg #(
+    parameter WIDTH = 32,
+    parameter REG_NUM = 32
+)(
+    input  wire             clk,
+    input  wire             we,
+    input  wire [4:0]       a1,
+    input  wire [4:0]       a2,
+    input  wire [4:0]       a3,
+    input  wire [WIDTH-1:0] wd,
+    output wire [WIDTH-1:0] rd1,
+    output wire [WIDTH-1:0] rd2
+);
+    reg [WIDTH-1:0] RF [0:REG_NUM-1];
+
+    assign rd1 = (a1 == 5'd0) ? {WIDTH{1'b0}} : RF[a1];
+    assign rd2 = (a2 == 5'd0) ? {WIDTH{1'b0}} : RF[a2];
+
+    always @(posedge clk) begin
+        if (we && (a3 != 5'd0))
+            RF[a3] <= wd;
+    end
+endmodule
+
+
+// ===== src/pc.v =====
+module pc #(
+    parameter WIDTH = 32
+)(
+    input  wire             clk,
+    input  wire             reset,
+    input  wire             en,
+    input  wire [WIDTH-1:0] pc_next,
+    output reg  [WIDTH-1:0] pc_q
+);
+    always @(posedge clk) begin
+        if (reset)
+            pc_q <= {WIDTH{1'b0}};
+        else if (en)
+            pc_q <= pc_next;
+    end
+endmodule
+
+
+// ===== src/rv_mc.v =====
+module rv_mc(
+    input wire clk,
+    input wire reset
+);
+    wire [31:0] pc_q;
+    wire [31:0] pc_next;
+    wire [31:0] pc_plus4;
+    wire [31:0] instr;
+    wire [31:0] mem_addr;
+    wire [31:0] mem_rd;
+    wire [31:0] dmem_rd;
+    wire [31:0] imm_ext;
+    wire [31:0] rd1;
+    wire [31:0] rd2;
+    wire [31:0] rd1_reg_q;
+    wire [31:0] rd2_reg_q;
+    wire [31:0] data_reg_q;
+    wire [31:0] alu_reg_q;
+    wire [31:0] pc_old_q;
+    wire [31:0] alu_src_a_data;
+    wire [31:0] alu_src_b_data;
+    wire [31:0] alu_result;
+    wire [31:0] result;
+    wire [31:0] result_mux_y;
+    wire        zero;
+
+    wire        we_pc;
+    wire        we_ir;
+    wire        we_mem;
+    wire        we_rf;
+    wire        reg_we;
+    wire        branch;
+    wire        pc_update;
+    wire        sel_mem_addr;
+    wire [1:0]  sel_result;
+    wire [1:0]  sel_alu_src_a;
+    wire [1:0]  sel_alu_src_b;
+    wire [2:0]  sel_ext;
+    wire [3:0]  alu_control;
+    wire [3:0]  state;
+
+    assign reg_we = we_rf;
+    assign dmem_rd = mem_rd;
+
+    // Multi-cycle design uses one shared memory. It is named IMEM so that
+    // the original single-cycle test style can still load dut.IMEM.RAM.
+    pc PC_reg(
+        .clk(clk),
+        .reset(reset),
+        .en(we_pc),
+        .pc_next(pc_next),
+        .pc_q(pc_q)
+    );
+
+    mc_reg PC_OLD_REG(
+        .clk(clk),
+        .reset(reset),
+        .en(we_ir),
+        .d(pc_q),
+        .q(pc_old_q)
+    );
+
+    mux2 #(32) MEM_ADDR_MUX(
+        .d0(pc_q),
+        .d1(alu_reg_q),
+        .sel(sel_mem_addr),
+        .y(mem_addr)
+    );
+
+    my_mem #(.WIDTH(32), .MEM_DEPTH(256)) IMEM(
+        .clk(clk),
+        .we(we_mem),
+        .a(mem_addr),
+        .wd(rd2_reg_q),
+        .rd(mem_rd)
+    );
+
+    mc_reg instr_reg(
+        .clk(clk),
+        .reset(reset),
+        .en(we_ir),
+        .d(mem_rd),
+        .q(instr)
+    );
+
+    mc_reg data_reg(
+        .clk(clk),
+        .reset(reset),
+        .en(1'b1),
+        .d(mem_rd),
+        .q(data_reg_q)
+    );
+
+    my_reg REGFILE(
+        .clk(clk),
+        .we(reg_we),
+        .a1(instr[19:15]),
+        .a2(instr[24:20]),
+        .a3(instr[11:7]),
+        .wd(result),
+        .rd1(rd1),
+        .rd2(rd2)
+    );
+
+    mc_reg rd1_reg(
+        .clk(clk),
+        .reset(reset),
+        .en(1'b1),
+        .d(rd1),
+        .q(rd1_reg_q)
+    );
+
+    mc_reg rd2_reg(
+        .clk(clk),
+        .reset(reset),
+        .en(1'b1),
+        .d(rd2),
+        .q(rd2_reg_q)
+    );
+
+    sign_ext SIGN_EXT(
+        .instr(instr[31:7]),
+        .imm_src(sel_ext),
+        .imm_ext(imm_ext)
+    );
+
+    mux4 #(32) ALU_SRC_A_MUX(
+        .d0(pc_q),
+        .d1(pc_old_q),
+        .d2(rd1_reg_q),
+        .d3(32'b0),
+        .sel(sel_alu_src_a),
+        .y(alu_src_a_data)
+    );
+
+    mux4 #(32) ALU_SRC_B_MUX(
+        .d0(rd2_reg_q),
+        .d1(imm_ext),
+        .d2(32'd4),
+        .d3(32'b0),
+        .sel(sel_alu_src_b),
+        .y(alu_src_b_data)
+    );
+
+    alu ALU(
+        .a(alu_src_a_data),
+        .b(alu_src_b_data),
+        .alu_control(alu_control),
+        .alu_result(alu_result),
+        .zero(zero)
+    );
+
+    mc_reg alu_reg(
+        .clk(clk),
+        .reset(reset),
+        .en(1'b1),
+        .d(alu_result),
+        .q(alu_reg_q)
+    );
+
+    mux4 #(32) RESULT_MUX(
+        .d0(alu_reg_q),
+        .d1(data_reg_q),
+        .d2(alu_result),
+        .d3(imm_ext),
+        .sel(sel_result),
+        .y(result_mux_y)
+    );
+
+    // S_JAL must write PC+4 to rd and update PC to the precomputed target.
+    assign result = (state == 4'd10) ? pc_q : result_mux_y;
+    assign pc_plus4 = alu_result;
+    assign pc_next = (state == 4'd10) ? alu_reg_q : result;
+
+    controller CONTROLLER(
+        .clk(clk),
+        .reset(reset),
+        .op(instr[6:0]),
+        .funct3(instr[14:12]),
+        .funct7b5(instr[30]),
+        .zero(zero),
+        .we_pc(we_pc),
+        .we_ir(we_ir),
+        .we_mem(we_mem),
+        .we_rf(we_rf),
+        .branch(branch),
+        .pc_update(pc_update),
+        .sel_mem_addr(sel_mem_addr),
+        .sel_result(sel_result),
+        .sel_alu_src_a(sel_alu_src_a),
+        .sel_alu_src_b(sel_alu_src_b),
+        .sel_ext(sel_ext),
+        .alu_control(alu_control),
+        .state(state)
+    );
+endmodule
+
+
+// ===== src/sign_ext.v =====
+module sign_ext(
+    input  wire [31:7] instr,
+    input  wire [2:0]  imm_src,
+    output reg  [31:0] imm_ext
+);
+    localparam IMM_I = 3'b000;
+    localparam IMM_S = 3'b001;
+    localparam IMM_B = 3'b010;
+    localparam IMM_J = 3'b011;
+    localparam IMM_U = 3'b100;
+
+    always @(*) begin
+        case (imm_src)
+            IMM_I: imm_ext = {{20{instr[31]}}, instr[31:20]};
+            IMM_S: imm_ext = {{20{instr[31]}}, instr[31:25], instr[11:7]};
+            IMM_B: imm_ext = {{20{instr[31]}}, instr[7], instr[30:25], instr[11:8], 1'b0};
+            IMM_J: imm_ext = {{12{instr[31]}}, instr[19:12], instr[20], instr[30:21], 1'b0};
+            IMM_U: imm_ext = {instr[31:12], 12'b0};
+            default: imm_ext = 32'b0;
+        endcase
+    end
+endmodule
+
+
+// ===== tb/tb_rv_mc.v =====
+`timescale 1ns/1ps
+
+module tb_rv_mc;
+    reg clk;
+    reg reset;
+
+    rv_mc dut(
+        .clk(clk),
+        .reset(reset)
+    );
+
+    always #5 clk = ~clk;
+
+    initial begin
+        clk = 1'b0;
+        reset = 1'b1;
+
+        $readmemh("programs/program.hex", dut.IMEM.RAM);
+
+        $dumpfile("rv_mc.vcd");
+        $dumpvars(0, tb_rv_mc);
+
+        #12;
+        reset = 1'b0;
+
+        #600;
+
+        $display("x1  = %0d", dut.REGFILE.RF[1]);
+        $display("x2  = %0d", dut.REGFILE.RF[2]);
+        $display("x3  = %0d", dut.REGFILE.RF[3]);
+        $display("MEM[0] = %0d", dut.IMEM.RAM[0]);
+        $display("x13 = %0d", dut.REGFILE.RF[13]);
+        $display("x14 = 0x%08h", dut.REGFILE.RF[14]);
+        $display("x16 = 0x%08h", dut.REGFILE.RF[16]);
+        $display("x18 = %0d", dut.REGFILE.RF[18]);
+
+        if (dut.REGFILE.RF[1]  !== 32'd5)        $fatal(1, "x1 check failed");
+        if (dut.REGFILE.RF[2]  !== 32'd10)       $fatal(1, "x2 check failed");
+        if (dut.REGFILE.RF[3]  !== 32'd15)       $fatal(1, "x3 check failed");
+        if (dut.IMEM.RAM[0]    !== 32'd15)       $fatal(1, "memory check failed");
+        if (dut.REGFILE.RF[13] !== 32'd15)       $fatal(1, "x13 check failed");
+        if (dut.REGFILE.RF[14] !== 32'h12345000) $fatal(1, "x14 check failed");
+        if (dut.REGFILE.RF[16] !== 32'd32)       $fatal(1, "x16 check failed");
+        if (dut.REGFILE.RF[18] !== 32'd42)       $fatal(1, "x18 check failed");
+
+        $display("PASS: multi-cycle RISC-V result matches the single-cycle test program.");
+        $finish;
+    end
+endmodule
+
+
