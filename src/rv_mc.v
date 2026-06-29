@@ -167,10 +167,12 @@ module rv_mc(
         .y(result_mux_y)
     );
 
-    // S_JAL must write PC+4 to rd and update PC to the precomputed target.
-    assign result = (state == 4'd10) ? pc_q : result_mux_y;
+     // In S_JAL, PC is updated to the target precomputed in alu_reg.
+    // JAL writes PC_old + 4 later in S_WB_DUMMY, so result does not need a special JAL override.
+    assign result = result_mux_y;
     assign pc_plus4 = alu_result;
-    assign pc_next = (state == 4'd10) ? alu_reg_q : result;
+    assign pc_next = (state == 4'd11) ? alu_reg_q : result;
+
 
     controller CONTROLLER(
         .clk(clk),
